@@ -91,8 +91,12 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
               .sendPacket();
       connection.setState(StateRegistry.PLAY);
       //Plugins may now send packets to client
-      player.getConnection().getChannel().pipeline().remove(ForgeConstants.PLUGIN_PACKET_QUEUE);
-      ((VelocityServer) Ambassador.getInstance().server).registerConnection(player);
+      if (player.getConnection().getChannel().pipeline().get(ForgeConstants.PLUGIN_PACKET_QUEUE) != null) {
+        player.getConnection().getChannel().pipeline().remove(ForgeConstants.PLUGIN_PACKET_QUEUE);
+      }
+      if (!isOutPreBridge(player)) {
+        ((VelocityServer) Ambassador.getInstance().server).registerConnection(player);
+      }
     }
 
     @Override
@@ -212,6 +216,11 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
   }
   public void updateResetType(ConnectedPlayer player) {
     COMPLETE.setResetType(player, getResetType(player));
+  }
+
+  private static boolean isOutPreBridge(ConnectedPlayer player) {
+    return player.getConnectionInFlight() != null
+            && player.getConnectionInFlight().getClass().getName().startsWith("icu.h2l.login.vServer.outpre.");
   }
 
   public enum ClientResetType {

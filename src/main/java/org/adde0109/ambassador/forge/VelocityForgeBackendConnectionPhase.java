@@ -6,8 +6,10 @@ import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.network.Connections;
 import com.velocitypowered.proxy.protocol.ProtocolUtils;
+import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.packet.AvailableCommandsPacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
+import io.netty.channel.ChannelFuture;
 import net.kyori.adventure.text.Component;
 import org.adde0109.ambassador.Ambassador;
 import org.adde0109.ambassador.forge.packet.*;
@@ -84,13 +86,13 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
       if (message instanceof RegistryPacket registryPacket) {
         clientPhase.forgeHandshake.addRegistry(registryPacket);
       }
-      player.getConnection().write(message);
+      forwardForgeLoginPacketToClient(player, message);
     } else {
       //Reset client if not ready to receive new handshake
       if (clientPhase.getResetType() == VelocityForgeClientConnectionPhase.ClientResetType.CRP ||
               clientPhase.getResetType() == VelocityForgeClientConnectionPhase.ClientResetType.SR) {
         clientPhase.resetConnectionPhase(player);
-        player.getConnection().write(message);
+        forwardForgeLoginPacketToClient(player, message);
         return;
       }
 
@@ -162,6 +164,19 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
     //Forge server
     //To avoid unnecessary resets, we wait until we get the handshake even if we know that we should
     //reset because that the previous server was Forge.
+  }
+
+  private static void forwardForgeLoginPacketToClient(ConnectedPlayer player, IForgeLoginWrapperPacket<?> message) {
+    player.getConnection().setState(StateRegistry.LOGIN);
+    ChannelFuture writeFuture = player.getConnection().write(message);
+    if (writeFuture != null) {
+      writeFuture.addListener(future -> {
+        if (!future.isSuccess()) {
+          Ambassador.getInstance().logger.warn("Failed forwarding backend forge packet {} to client player={} clientState={}",
+                  message.getClass().getSimpleName(), player.getUsername(), player.getConnection().getState(), future.cause());
+        }
+      });
+    }
   }
 
   public void onLoginSuccess(VelocityServerConnection serverCon, ConnectedPlayer player) {

@@ -29,10 +29,13 @@ public class VelocityEventHandler {
   @Subscribe(order = PostOrder.FIRST)
   public void onPostLoginEvent(PostLoginEvent event, Continuation continuation) {
     ConnectedPlayer player = (ConnectedPlayer) event.getPlayer();
-    if (player.getPhase() instanceof VelocityForgeClientConnectionPhase) {
+    if (player.getPhase() instanceof VelocityForgeClientConnectionPhase phase && !phase.consideredComplete()) {
       ((VelocityServer) Ambassador.getInstance().server).unregisterConnection(player);
 
       player.getConnection().eventLoop().submit(() -> {
+        if (player.getConnection().getChannel().pipeline().get(ForgeConstants.FORGE_HANDSHAKE_DECODER) != null) {
+          return;
+        }
         player.getConnection().setState(StateRegistry.LOGIN);
 
         player.getConnection().getChannel().pipeline().addBefore(

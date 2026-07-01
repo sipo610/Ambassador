@@ -1,25 +1,21 @@
 package org.adde0109.ambassador.velocity.backend;
 
 import com.velocitypowered.proxy.VelocityServer;
-import com.velocitypowered.proxy.config.PlayerInfoForwarding;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
-import com.velocitypowered.proxy.connection.backend.*;
+import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.protocol.MinecraftPacket;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
-import com.velocitypowered.proxy.protocol.packet.LoginPluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.ServerLoginSuccessPacket;
-import com.velocitypowered.proxy.util.except.QuietRuntimeException;
-import io.netty.buffer.Unpooled;
 import org.adde0109.ambassador.forge.*;
 
 public class ForgeLoginSessionHandler implements MinecraftSessionHandler {
 
-  private final LoginSessionHandler original;
+  private final MinecraftSessionHandler original;
   private final VelocityServerConnection serverConnection;
   private final VelocityServer server;
 
-  public ForgeLoginSessionHandler(LoginSessionHandler original, VelocityServerConnection serverConnection, VelocityServer server) {
+  public ForgeLoginSessionHandler(MinecraftSessionHandler original, VelocityServerConnection serverConnection, VelocityServer server) {
     this.original = original;
     this.serverConnection = serverConnection;
     this.server = server;

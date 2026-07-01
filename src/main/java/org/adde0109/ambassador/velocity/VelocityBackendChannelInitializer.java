@@ -23,12 +23,21 @@ public class VelocityBackendChannelInitializer extends BackendChannelInitializer
     super(server);
     this.delegate = delegate;
     this.server = server;
-    try {
-      INIT_CHANNEL = delegate.getClass().getDeclaredMethod("initChannel", Channel.class);
-      INIT_CHANNEL.setAccessible(true);
-    } catch (ReflectiveOperationException e) {
-      throw new RuntimeException(e);
+    Method method = findInitChannel(delegate.getClass());
+    method.setAccessible(true);
+    this.INIT_CHANNEL = method;
+  }
+
+  private static Method findInitChannel(Class<?> cls) {
+    Class<?> current = cls;
+    while (current != null) {
+      try {
+        return current.getDeclaredMethod("initChannel", Channel.class);
+      } catch (NoSuchMethodException ignored) {
+        current = current.getSuperclass();
+      }
     }
+    throw new RuntimeException("initChannel(Channel) not found in hierarchy of " + cls.getName());
   }
 
   @Override
