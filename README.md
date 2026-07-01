@@ -1,5 +1,26 @@
 # Ambassador
 
+## HyperZoneLogin outpre 兼容维护版
+
+这是 `sipo610/Ambassador` fork 的 `hzl-outpre-compat` 分支，用来兼容 HyperZoneLogin 的 `outpre` 模式。
+
+适用目标：
+
+- Velocity 代理端同时安装 HyperZoneLogin 与 Ambassador。
+- Forge/Mohist 1.20.1 客户端通过 HZL outpre 认证后进入后端。
+- 客户端已安装 Ambassador 辅助 mod。
+- 后端登录服/主城服不安装 Ambassador Velocity 插件。
+
+这不是上游 Ambassador 的通用新版本，而是一个针对 HZL outpre 桥接流程的兼容维护分支。完整修改说明见 [CHANGES-HZL.md](CHANGES-HZL.md)。
+
+关键兼容点：
+
+- `VelocityServerChannelInitializer` / `VelocityBackendChannelInitializer`：沿继承链查找 `initChannel(Channel)`，兼容 HZL 包装过的 initializer。
+- `ForgeLoginWrapperHandler`：支持从 `MinecraftConnection#getAssociation()` 动态解析真实连接对象。
+- `VelocityForgeClientConnectionPhase`：识别 HZL outpre bridge，避免 Forge 握手完成后重复 `registerConnection(player)`。
+- `VelocityForgeBackendConnectionPhase`：转发后端 Forge login 包前保持客户端连接处于 `StateRegistry.LOGIN`。
+- `ForgeLoginSessionHandler`：放宽原始 session handler 类型到 `MinecraftSessionHandler`，兼容 outpre 桥接阶段。
+
 This is a Velocity plugin that makes it possible to host a modern Forge server behind a Velocity proxy!
 
 Unlike other solutions, this plugin does not require any special modifications to the backend server nor the client. (The player doesn't need to do anything)
