@@ -65,6 +65,81 @@ public class VelocityEventHandler {
     continuation.resume();
   }
 
+
+  @Subscribe(order = PostOrder.FIRST)
+  public void onServerPreConnectDebugFirst(ServerPreConnectEvent event) {
+    logServerPreConnect("first", event);
+  }
+
+  @Subscribe(order = PostOrder.LAST)
+  public void onServerPreConnectDebugLast(ServerPreConnectEvent event) {
+    logServerPreConnect("last", event);
+  }
+
+  @Subscribe(order = PostOrder.FIRST)
+  public void onKickedFromServerDebugFirst(KickedFromServerEvent event) {
+    logKickedFromServer("first", event);
+  }
+
+  @Subscribe(order = PostOrder.LAST)
+  public void onKickedFromServerDebugLast(KickedFromServerEvent event) {
+    logKickedFromServer("last", event);
+  }
+
+  private void logServerPreConnect(String stage, ServerPreConnectEvent event) {
+    if (!Ambassador.getInstance().config.isDebugMode()) {
+      return;
+    }
+    ConnectedPlayer player = (ConnectedPlayer) event.getPlayer();
+    String currentServer = player.getConnectedServer() == null
+            ? "<none>"
+            : player.getConnectedServer().getServerInfo().getName();
+    String previousServer = event.getPreviousServer() == null
+            ? "<none>"
+            : event.getPreviousServer().getServerInfo().getName();
+    String resultServer = event.getResult().getServer()
+            .map(server -> server.getServerInfo().getName())
+            .orElse("<denied>");
+    String inFlight = player.getConnectionInFlight() == null
+            ? "<none>"
+            : player.getConnectionInFlight().getClass().getName();
+    Ambassador.getInstance().debugInfo(
+            "[AMB-HZL-DEBUG] server-pre-connect-{} player={} original={} result={} previous={} current={} inFlight={} clientState={} phase={}",
+            stage, player.getUsername(), event.getOriginalServer().getServerInfo().getName(), resultServer,
+            previousServer, currentServer, inFlight, player.getConnection().getState(), player.getPhase());
+  }
+
+  private void logKickedFromServer(String stage, KickedFromServerEvent event) {
+    if (!Ambassador.getInstance().config.isDebugMode()) {
+      return;
+    }
+    ConnectedPlayer player = (ConnectedPlayer) event.getPlayer();
+    String currentServer = player.getConnectedServer() == null
+            ? "<none>"
+            : player.getConnectedServer().getServerInfo().getName();
+    String inFlight = player.getConnectionInFlight() == null
+            ? "<none>"
+            : player.getConnectionInFlight().getClass().getName();
+    Ambassador.getInstance().debugInfo(
+            "[AMB-HZL-DEBUG] kicked-from-server-{} player={} kickedServer={} duringConnect={} reason={} result={} current={} inFlight={} clientState={} phase={}",
+            stage, player.getUsername(), event.getServer().getServerInfo().getName(),
+            event.kickedDuringServerConnect(), event.getServerKickReason().map(Object::toString).orElse("<none>"),
+            describeKickResult(event.getResult()), currentServer, inFlight,
+            player.getConnection().getState(), player.getPhase());
+  }
+
+  private String describeKickResult(KickedFromServerEvent.ServerKickResult result) {
+    if (result instanceof KickedFromServerEvent.RedirectPlayer redirect) {
+      return "redirect:" + redirect.getServer().getServerInfo().getName();
+    }
+    if (result instanceof KickedFromServerEvent.DisconnectPlayer disconnect) {
+      return "disconnect:" + disconnect.getReasonComponent();
+    }
+    if (result instanceof KickedFromServerEvent.Notify notify) {
+      return "notify:" + notify.getMessageComponent();
+    }
+    return result.getClass().getName();
+  }
   @Subscribe
   public void onPlayerChannelRegisterEvent(PlayerChannelRegisterEvent event) {
     ConnectedPlayer player = (ConnectedPlayer) event.getPlayer();

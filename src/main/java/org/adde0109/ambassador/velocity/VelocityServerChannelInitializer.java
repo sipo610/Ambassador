@@ -9,6 +9,7 @@ import com.velocitypowered.proxy.protocol.StateRegistry;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
+import org.adde0109.ambassador.velocity.client.ClientConnectionDebugHandler;
 import org.adde0109.ambassador.velocity.client.VelocityHandshakeSessionHandler;
 import org.jetbrains.annotations.NotNull;
 
@@ -51,6 +52,9 @@ public class VelocityServerChannelInitializer extends ServerChannelInitializer {
     finally {
       if (ch.pipeline().get(MinecraftConnection.class) == null)
         super.initChannel(ch);
+      if (ch.pipeline().get("ambassador_client_debug") == null && ch.pipeline().get(Connections.HANDLER) != null) {
+        ch.pipeline().addBefore(Connections.HANDLER, "ambassador_client_debug", new ClientConnectionDebugHandler());
+      }
       MinecraftConnection handler = ch.pipeline().get(MinecraftConnection.class);
       HandshakeSessionHandler originalSessionHandler = (HandshakeSessionHandler) handler.getActiveSessionHandler();
       handler.setActiveSessionHandler(StateRegistry.HANDSHAKE, new VelocityHandshakeSessionHandler(originalSessionHandler, handler, server));

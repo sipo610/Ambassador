@@ -66,7 +66,17 @@ public class Ambassador {
     return instance;
   }
 
+  public void debugInfo(String message, Object... args) {
+    if (config != null && config.isDebugMode()) {
+      logger.info(message, args);
+    }
+  }
 
+  public void debugWarn(String message, Object... args) {
+    if (config != null && config.isDebugMode()) {
+      logger.warn(message, args);
+    }
+  }
   @Inject
   public Ambassador(ProxyServer server, Logger logger, @DataDirectory Path dataDirectory, Metrics.Factory metricsFactory) {
     this.server = server;

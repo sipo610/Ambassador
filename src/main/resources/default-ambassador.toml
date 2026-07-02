@@ -17,6 +17,11 @@ bypass-registry-checks = false
 # Warning: This is a safety measure for when bypassRegistryCheck is true. Setting this to also true can cause crashes.
 bypass-mod-checks = false
 
+# Ignore server-only mod ids when checking the target Forge ModList against the client ModList.
+# Keep bypass-mod-checks disabled; add only ids that are confirmed to be server-only in your pack.
+# HZL/Mohist production packs often expose these even when the client should not install them.
+ignored-server-mods = ["mohist", "ftbsync", "antiportals"]
+
 # Only for debug/troubleshooting
 debug-mode = false
 

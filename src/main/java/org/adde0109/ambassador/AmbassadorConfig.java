@@ -11,6 +11,9 @@ import java.io.IOException;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 public class AmbassadorConfig {
 
@@ -23,6 +26,8 @@ public class AmbassadorConfig {
     private boolean bypassRegistryCheck = false;
     @Expose
     private boolean bypassModCheck = false;
+    @Expose
+    private List<String> ignoredServerMods = List.of("mohist", "ftbsync", "antiportals");
 
     @Expose
     private boolean debugMode = false;
@@ -34,10 +39,12 @@ public class AmbassadorConfig {
     private String kickReconnectMessageString = "<red>Please reconnect.</red>";
 
     private AmbassadorConfig(boolean silenceWarnings, boolean bypassRegistryCheck, boolean bypassModCheck,
-                             boolean debugMode, boolean enableKickReset, String kickReconnectMessageString) {
+                             List<String> ignoredServerMods, boolean debugMode, boolean enableKickReset,
+                             String kickReconnectMessageString) {
         this.silenceWarnings = silenceWarnings;
         this.bypassRegistryCheck = bypassRegistryCheck;
         this.bypassModCheck = bypassModCheck;
+        this.ignoredServerMods = ignoredServerMods;
         this.debugMode = debugMode;
         this.enableKickReset = enableKickReset;
         this.kickReconnectMessageString = kickReconnectMessageString;
@@ -73,6 +80,12 @@ public class AmbassadorConfig {
 
         boolean bypassModCheck = config.getOrElse("bypass-mod-checks", false);
 
+        List<String> ignoredServerMods = readStringList(config.get("ignored-server-mods"),
+                List.of("mohist", "ftbsync", "antiportals"));
+        if (!config.contains("ignored-server-mods")) {
+            config.set("ignored-server-mods", ignoredServerMods);
+        }
+
         boolean debugMode = config.getOrElse("debug-mode", false);
 
         String kickReconnectMessageString = config.getOrElse("disconnect-reset-message",
@@ -92,14 +105,34 @@ public class AmbassadorConfig {
             config.set("serverRedirectTimeout", serverSwitchCancellationTime);
             config.set("bypass-registry-checks", bypassRegistryCheck);
             config.set("bypass-mod-checks", bypassModCheck);
+            config.set("ignored-server-mods", ignoredServerMods);
             config.set("debug-mode", debugMode);
             config.set("reconnect-message", kickReconnectMessageString);
         }
 
         boolean enableKickReset = config.getOrElse("enable-kick-reset", false);
 
-        return new AmbassadorConfig(silenceWarnings, bypassRegistryCheck, bypassModCheck,
+        return new AmbassadorConfig(silenceWarnings, bypassRegistryCheck, bypassModCheck, ignoredServerMods,
                 debugMode, enableKickReset, kickReconnectMessageString);
+    }
+
+    private static List<String> readStringList(Object value, List<String> defaultValue) {
+        Object source = value == null ? defaultValue : value;
+        if (!(source instanceof List<?> values)) {
+            return defaultValue;
+        }
+
+        List<String> result = new ArrayList<>();
+        for (Object entry : values) {
+            if (entry == null) {
+                continue;
+            }
+            String normalized = entry.toString().trim().toLowerCase(Locale.ROOT);
+            if (!normalized.isEmpty() && !result.contains(normalized)) {
+                result.add(normalized);
+            }
+        }
+        return result;
     }
 
     public int getServerSwitchCancellationTime() {
@@ -116,6 +149,10 @@ public class AmbassadorConfig {
 
     public boolean isBypassModCheck() {
         return bypassModCheck;
+    }
+
+    public List<String> getIgnoredServerMods() {
+        return ignoredServerMods;
     }
 
     public boolean isDebugMode() {

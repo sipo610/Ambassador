@@ -83,4 +83,8 @@ public class ModListReplyPacket implements IForgeLoginWrapperPacket<Context.Clie
   public Map<ChannelIdentifier, String> getChannels() {
     return channels;
   }
+
+  public Map<String, String> getRegistries() {
+    return registries;
+  }
 }

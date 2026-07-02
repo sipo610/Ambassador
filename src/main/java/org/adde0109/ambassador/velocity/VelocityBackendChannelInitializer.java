@@ -2,9 +2,11 @@ package org.adde0109.ambassador.velocity;
 
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.network.BackendChannelInitializer;
+import com.velocitypowered.proxy.network.Connections;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
 import org.adde0109.ambassador.forge.ForgeConstants;
+import org.adde0109.ambassador.velocity.backend.BackendPluginMessageDebugHandler;
 import org.adde0109.ambassador.velocity.backend.FMLMarkerAdder;
 import org.adde0109.ambassador.velocity.backend.VelocityForgeBackendHandshakeHandler;
 import org.slf4j.Logger;
@@ -46,6 +48,10 @@ public class VelocityBackendChannelInitializer extends BackendChannelInitializer
       INIT_CHANNEL.invoke(delegate, ch);
     } catch (ReflectiveOperationException e) {
       throw new RuntimeException(e);
+    }
+    if (ch.pipeline().get(Connections.HANDLER) != null) {
+      ch.pipeline().addBefore(Connections.HANDLER, "ambassador_backend_plugin_debug",
+              new BackendPluginMessageDebugHandler());
     }
     ch.pipeline().addLast(ForgeConstants.MARKER_ADDER, new FMLMarkerAdder(server));
     ch.pipeline().addLast(ForgeConstants.HANDLER, new VelocityForgeBackendHandshakeHandler(server));

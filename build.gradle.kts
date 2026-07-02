@@ -15,6 +15,10 @@ repositories {
     }
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(17)
+}
+
 dependencies {
     compileOnly("com.velocitypowered:velocity-api")
     compileOnly("com.velocitypowered:velocity-proxy")
