@@ -1,6 +1,7 @@
 package org.adde0109.ambassador.forge;
 
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.util.ModInfo;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
@@ -52,6 +53,10 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
   WAITING_RESET {
     @Override
     void onTransitionToNewPhase(ConnectedPlayer player) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] WAITING_RESET enter player={} clientState={} inFlight={} connected={}",
+              player.getUsername(), player.getConnection().getState(),
+              player.getConnectionInFlight() == null ? "null" : player.getConnectionInFlight().getServerInfo().getName(),
+              player.getConnectedServer() == null ? "null" : player.getConnectedServer().getServerInfo().getName());
       // We unregister so no plugin sees this client while the client is being reset.
       ((VelocityServer) Ambassador.getInstance().server).unregisterConnection(player);
       player.getConnection().getChannel().pipeline().addAfter(Connections.MINECRAFT_ENCODER,
@@ -65,12 +70,103 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
     @Override
     public boolean handle(ConnectedPlayer player, IForgeLoginWrapperPacket msg, VelocityServerConnection server) {
       if (msg.getContext().getResponseID() == 98) {
-        // Reset complete.
-        player.getConnection().getChannel().pipeline().remove(ForgeConstants.RESET_LISTENER);
+        RegisteredServer reconnectTarget = resetReconnectTarget;
+        resetReconnectTarget = null;
+        boolean keepResetListenerForForgeLogin = server != null && server.getConnection().getType() instanceof ForgeFMLConnectionType;
+        boolean keepResetListenerForFreshReconnect = reconnectTarget != null;
+        if (!keepResetListenerForForgeLogin && !keepResetListenerForFreshReconnect
+                && player.getConnection().getChannel().pipeline().get(ForgeConstants.RESET_LISTENER) != null) {
+          player.getConnection().getChannel().pipeline().remove(ForgeConstants.RESET_LISTENER);
+        } else if (keepResetListenerForForgeLogin) {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete keeping raw guard until Forge login success player={} target={}",
+                  player.getUsername(), server.getServerInfo().getName());
+        } else if (keepResetListenerForFreshReconnect) {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete keeping raw guard during fresh reconnect wait player={} target={} state={}",
+                  player.getUsername(), reconnectTarget.getServerInfo().getName(), player.getConnection().getState());
+        }
         player.setPhase(NOT_STARTED);
-        player.getConnection().getChannel().pipeline().remove(ForgeConstants.LOGIN_PACKET_QUEUE);
 
-        if (!(server.getConnection().getType() instanceof ForgeFMLConnectionType)) {
+        if (reconnectTarget != null) {
+          player.getConnection().setState(StateRegistry.LOGIN);
+          if (player.getConnection().getChannel().pipeline().get(ForgeConstants.LOGIN_PACKET_QUEUE) instanceof ClientPacketQueue loginQueue) {
+            loginQueue.discardQueuedOnRemove();
+            player.getConnection().getChannel().pipeline().remove(ForgeConstants.LOGIN_PACKET_QUEUE);
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete discarded stale LOGIN queue before fresh reconnect player={} target={} state={}",
+                    player.getUsername(), reconnectTarget.getServerInfo().getName(), player.getConnection().getState());
+          }
+          takePendingResetLoginPacket(player);
+          player.resetInFlightConnection();
+          final int freshReconnectDelayMs = Ambassador.getInstance().config.getCrpFreshReconnectDelayMs();
+          final String reconnectTargetName = reconnectTarget.getServerInfo().getName();
+          Runnable freshReconnect = () -> {
+            if (!player.isActive() || !player.getConnection().getChannel().isActive()) {
+              Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete fresh reconnect skipped inactive player={} target={} active={} channelActive={}",
+                      player.getUsername(), reconnectTargetName, player.isActive(), player.getConnection().getChannel().isActive());
+              return;
+            }
+            player.getConnection().setState(StateRegistry.LOGIN);
+            player.resetInFlightConnection();
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete reconnecting fresh target player={} target={} active={} state={} immediate={}",
+                    player.getUsername(), reconnectTargetName, player.isActive(), player.getConnection().getState(), freshReconnectDelayMs <= 0);
+            player.createConnectionRequest(reconnectTarget).fireAndForget();
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete fresh connect request fired player={} target={}",
+                    player.getUsername(), reconnectTargetName);
+          };
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete scheduling fresh reconnect player={} target={} delayMs={} active={} state={}",
+                  player.getUsername(), reconnectTargetName, freshReconnectDelayMs, player.isActive(), player.getConnection().getState());
+          if (freshReconnectDelayMs <= 0) {
+            freshReconnect.run();
+          } else {
+            player.getConnection().getChannel().eventLoop().schedule(freshReconnect, freshReconnectDelayMs, TimeUnit.MILLISECONDS);
+          }
+          return true;
+        }
+
+        if (keepResetListenerForForgeLogin) {
+          final int resetSettleDelayMs = Ambassador.getInstance().config.getCrpResetSettleDelayMs();
+          final String targetName = server == null ? "null" : server.getServerInfo().getName();
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete scheduling delayed LOGIN queue flush player={} delayMs={} beforeState={} target={}",
+                  player.getUsername(), resetSettleDelayMs, player.getConnection().getState(), targetName);
+          player.getConnection().getChannel().eventLoop().schedule(() -> {
+            if (!player.isActive() || !player.getConnection().getChannel().isActive()) {
+              Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete delayed flush skipped inactive player={} target={}",
+                      player.getUsername(), targetName);
+              return;
+            }
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete delayed flush LOGIN queue player={} beforeState={} target={}",
+                    player.getUsername(), player.getConnection().getState(), targetName);
+            player.getConnection().setState(StateRegistry.LOGIN);
+            if (player.getConnection().getChannel().pipeline().get(ForgeConstants.LOGIN_PACKET_QUEUE) != null) {
+              player.getConnection().getChannel().pipeline().remove(ForgeConstants.LOGIN_PACKET_QUEUE);
+            } else {
+              Ambassador.getInstance().traceWarn("[HZL-OUTPRE][TRACE] reset-complete delayed flush missing LOGIN queue player={} target={}",
+                      player.getUsername(), targetName);
+            }
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete delayed flushed LOGIN queue player={} afterState={} target={}",
+                    player.getUsername(), player.getConnection().getState(), targetName);
+            if (player.getConnectionInFlight() != null) {
+              player.getConnectionInFlight().getConnection().getChannel().config().setAutoRead(true);
+              Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete delayed resumed inFlight player={} target={} inFlight={}",
+                      player.getUsername(), targetName, player.getConnectionInFlight().getServerInfo().getName());
+            }
+            takePendingResetLoginPacket(player);
+          }, resetSettleDelayMs, TimeUnit.MILLISECONDS);
+          return true;
+        }
+
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete flush LOGIN queue player={} beforeState={} target={}",
+                player.getUsername(), player.getConnection().getState(), server == null ? "null" : server.getServerInfo().getName());
+        player.getConnection().setState(StateRegistry.LOGIN);
+        if (player.getConnection().getChannel().pipeline().get(ForgeConstants.LOGIN_PACKET_QUEUE) != null) {
+          player.getConnection().getChannel().pipeline().remove(ForgeConstants.LOGIN_PACKET_QUEUE);
+        }
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset-complete flushed LOGIN queue player={} afterState={} target={}",
+                player.getUsername(), player.getConnection().getState(), server == null ? "null" : server.getServerInfo().getName());
+
+        if (server != null && !(server.getConnection().getType() instanceof ForgeFMLConnectionType)) {
+          player.getConnection().setState(StateRegistry.PLAY);
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] reset target vanilla, state LOGIN->PLAY player={} target={}",
+                  player.getUsername(), server.getServerInfo().getName());
           complete(player, ((Context.ClientContext) msg.getContext()).success() ? ClientResetType.CRP : null);
         }
 
@@ -82,20 +178,7 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
                 player.getUsername(), server == null ? "<none>" : server.getServerInfo().getName(),
                 ((Context.ClientContext) msg.getContext()).success(), player.getConnection().getState(),
                 player.getConnectionInFlight() == null ? "<none>" : player.getConnectionInFlight().getClass().getName());
-
-        PendingForgeLoginPacket pending = takePendingResetLoginPacket(player);
-        if (pending != null) {
-          if (player.isActive() && pending.server() == server) {
-            Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] forward-after-crp-ack player={} server={} packet={}",
-                    player.getUsername(), pending.server().getServerInfo().getName(), pending.message().getClass().getSimpleName());
-            VelocityForgeBackendConnectionPhase.forwardForgeLoginPacketToClient(player, pending.message());
-          } else {
-            Ambassador.getInstance().logger.warn("Skipping pending forge login packet after reset ACK player={} active={} pendingServer={} currentServer={}",
-                    player.getUsername(), player.isActive(), pending.server().getServerInfo().getName(),
-                    server == null ? "<none>" : server.getServerInfo().getName());
-            pending.server().disconnect();
-          }
-        }
+        takePendingResetLoginPacket(player);
         return true;
       }
       return false;
@@ -151,6 +234,9 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
 
   // TODO: Make a new class linked to each player with these fields instead of having them in this phase class.
   public ForgeHandshake forgeHandshake = new ForgeHandshake();
+  public boolean forgeHandshakeFromOutPreBridge = false;
+  public RegisteredServer resetReconnectTarget = null;
+  public boolean keepConnectedServerDuringNextReset = false;
 
   public boolean handle(ConnectedPlayer player, IForgeLoginWrapperPacket<Context.ClientContext> msg,
                         VelocityServerConnection server) {
@@ -185,6 +271,7 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
     player.getConnectionInFlight().getConnection().write(msg);
     player.setPhase(nextPhase());
     nextPhase().forgeHandshake = this.forgeHandshake;
+    nextPhase().forgeHandshakeFromOutPreBridge = this.forgeHandshakeFromOutPreBridge;
     return true;
   }
 
@@ -204,6 +291,7 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
     player.setPhase(COMPLETE);
     ChannelFuture successFuture = sendLoginSuccessAndSwitchToPlay(player);
     COMPLETE.forgeHandshake = forgeHandshake;
+    COMPLETE.forgeHandshakeFromOutPreBridge = forgeHandshakeFromOutPreBridge;
     if (resetType != null) {
       COMPLETE.setResetType(player, resetType);
     }
@@ -293,6 +381,11 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
     COMPLETE.setResetType(player, resetType);
   }
 
+  public void reconnectFreshAfterReset(RegisteredServer target) {
+    WAITING_RESET.resetReconnectTarget = target;
+    WAITING_RESET.keepConnectedServerDuringNextReset = true;
+  }
+
   public void updateResetType(ConnectedPlayer player) {
     COMPLETE.setResetType(player, getResetType(player));
   }
@@ -324,6 +417,11 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
       Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] login-success-written player={} uuid={} switchingState=PLAY",
               player.getUsername(), player.getUniqueId());
       connection.setState(StateRegistry.PLAY);
+      if (connection.getChannel().pipeline().get(ForgeConstants.RESET_LISTENER) != null) {
+        connection.getChannel().pipeline().remove(ForgeConstants.RESET_LISTENER);
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] COMPLETE removed CRP raw guard player={} state={}",
+                player.getUsername(), connection.getState());
+      }
       if (player.getConnection().getChannel().pipeline().get(ForgeConstants.PLUGIN_PACKET_QUEUE) != null) {
         player.getConnection().getChannel().pipeline().remove(ForgeConstants.PLUGIN_PACKET_QUEUE);
       }
@@ -371,29 +469,59 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
                 player.getUsername(), connection.getState(),
                 player.getConnectedServer() == null ? "<none>" : player.getConnectedServer().getServerInfo().getName(),
                 player.getConnectionInFlight() == null ? "<none>" : player.getConnectionInFlight().getClass().getName());
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset start player={} state={} inFlight={} connected={} type={}",
+                player.getUsername(), connection.getState(),
+                player.getConnectionInFlight() == null ? "null" : player.getConnectionInFlight().getServerInfo().getName(),
+                player.getConnectedServer() == null ? "null" : player.getConnectedServer().getServerInfo().getName(),
+                connection.getType());
 
+        boolean keepConnectedServer = WAITING_RESET.keepConnectedServerDuringNextReset;
+        WAITING_RESET.keepConnectedServerDuringNextReset = false;
         VelocityServerConnection oldServer = player.getConnectedServer();
-        if (oldServer != null) {
+
+        if (oldServer != null && keepConnectedServer) {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset preserving connected server during reset player={} connected={} connectedClass={} state={}",
+                  player.getUsername(), oldServer.getServerInfo().getName(), oldServer.getClass().getName(), connection.getState());
+          try {
+            oldServer.ensureConnected().setAutoReading(false);
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset paused connected server autoread player={} connected={}",
+                    player.getUsername(), oldServer.getServerInfo().getName());
+          } catch (IllegalStateException e) {
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset kept connected server but could not pause autoread player={} connected={} reason={}",
+                    player.getUsername(), oldServer.getServerInfo().getName(), e.toString());
+          }
+        } else if (oldServer != null) {
           Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] crp-mark-old-backend-transition player={} oldServer={}",
                   player.getUsername(), oldServer.getServerInfo().getName());
           oldServer.setConnectionPhase(BackendConnectionPhases.IN_TRANSITION);
-          player.setConnectedServer(null);
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset disconnecting connected server player={} connected={} state={}",
+                  player.getUsername(), oldServer.getServerInfo().getName(), connection.getState());
           oldServer.disconnect();
+          player.setConnectedServer(null);
         }
+
         if (player.getConnectionInFlight() != null) {
           player.getConnectionInFlight().getConnection().getChannel().config().setAutoRead(false);
         }
 
         ChannelFuture resetFuture;
         if (connection.getState() == StateRegistry.PLAY || connection.getState() == StateRegistry.CONFIG) {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset using PLAY plugin-message player={} state={}",
+                  player.getUsername(), connection.getState());
           resetFuture = connection.write(new PluginMessagePacket("fml:handshake",
                   Unpooled.wrappedBuffer(ForgeHandshakeUtils.generatePluginResetPacket())));
-          resetFuture.addListener(future -> {
-            if (future.isSuccess() && connection.getChannel().isActive()) {
-              connection.setState(StateRegistry.LOGIN);
-            }
-          });
+          if (resetFuture != null) {
+            resetFuture.addListener(future -> {
+              if (future.isSuccess() && connection.getChannel().isActive()) {
+                connection.setState(StateRegistry.LOGIN);
+                Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset set LOGIN player={} state={}",
+                        player.getUsername(), connection.getState());
+              }
+            });
+          }
         } else {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset using LOGIN login-wrapper player={} state={}",
+                  player.getUsername(), connection.getState());
           resetFuture = connection.write(new LoginPluginMessagePacket(98, "fml:loginwrapper",
                   Unpooled.wrappedBuffer(ForgeHandshakeUtils.generateResetPacket())));
         }
@@ -402,6 +530,8 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
           connection.getChannel().pipeline().addBefore(Connections.MINECRAFT_DECODER,
                   ForgeConstants.RESET_LISTENER, new FML2CRPMResetCompleteDecoder());
         }
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] CRP reset listener installed player={} state={} channel={}",
+                player.getUsername(), connection.getState(), connection.getChannel());
 
         player.setPhase(WAITING_RESET);
         WAITING_RESET.onTransitionToNewPhase(player);

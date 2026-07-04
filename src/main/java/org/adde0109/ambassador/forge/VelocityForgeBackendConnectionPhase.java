@@ -12,6 +12,7 @@ import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import io.netty.channel.ChannelFuture;
 import net.kyori.adventure.text.Component;
 import org.adde0109.ambassador.Ambassador;
+import org.adde0109.ambassador.velocity.backend.ForgeLoginSessionHandler;
 import org.adde0109.ambassador.forge.packet.*;
 import org.adde0109.ambassador.forge.pipeline.CommandDecoderErrorCatcher;
 
@@ -46,7 +47,7 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
 
       serverCon.getConnection().getChannel().pipeline().addBefore(Connections.MINECRAFT_DECODER,
               ForgeConstants.COMMAND_ERROR_CATCHER,
-              new CommandDecoderErrorCatcher(serverCon.getConnection().getProtocolVersion(),player));
+              new CommandDecoderErrorCatcher(serverCon.getConnection().getProtocolVersion(), player));
     }
 
     @Override
@@ -73,26 +74,52 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   }
 
   public void handle(VelocityServerConnection server, ConnectedPlayer player, IForgeLoginWrapperPacket<Context> message) {
-    VelocityForgeBackendConnectionPhase newPhase = getNewPhase(server,message);
+    VelocityForgeBackendConnectionPhase newPhase = getNewPhase(server, message);
 
     server.setConnectionPhase(newPhase);
 
     //Forge -> Forge
-
     VelocityForgeClientConnectionPhase clientPhase = (VelocityForgeClientConnectionPhase) player.getPhase();
 
-
     if (!player.isActive()) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend closing because frontend player is inactive server={} player={} msg={} backendState={}",
+              server.getServerInfo().getName(), player.getUsername(), message.getClass().getSimpleName(), server.getConnection().getState());
+      server.disconnect();
       return;
+    }
+
+    Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend handle server={} player={} msg={} clientPhase={} clientComplete={} clientState={} resetType={} backendPhase={} backendState={} connected={} inFlight={}",
+            server.getServerInfo().getName(), player.getUsername(), message.getClass().getSimpleName(),
+            player.getPhase().getClass().getName(), clientPhase.consideredComplete(),
+            player.getConnection().getState(), clientPhase.getResetType(),
+            server.getPhase(), server.getConnection().getState(),
+            player.getConnectedServer() == null ? "null" : player.getConnectedServer().getServerInfo().getName(),
+            player.getConnectionInFlight() == null ? "null" : player.getConnectionInFlight().getServerInfo().getName());
+
+    boolean outPreBridge = isOutPreBridge(server);
+    Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend classification server={} outPreBridge={} baselineFromOutPre={} clientComplete={}",
+            server.getServerInfo().getName(), outPreBridge, clientPhase.forgeHandshakeFromOutPreBridge, clientPhase.consideredComplete());
+    boolean replacingOutPreBaseline = clientPhase.consideredComplete()
+            && clientPhase.forgeHandshakeFromOutPreBridge
+            && !outPreBridge;
+
+    if (clientPhase.consideredComplete()
+            && clientPhase.getResetType() == VelocityForgeClientConnectionPhase.ClientResetType.UNKNOWN) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend resetType UNKNOWN, updating from modInfo player={} modInfo={}",
+              player.getUsername(), player.getModInfo());
+      clientPhase.updateResetType(player);
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend resetType updated player={} resetType={}",
+              player.getUsername(), clientPhase.getResetType());
     }
 
     if (!clientPhase.consideredComplete()) {
       //Initial Forge
       if (message instanceof ModListPacket modListPacket) {
         clientPhase.forgeHandshake = new ForgeHandshake();
-        Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] initial-forge-modlist player={} server={} serverMods={} serverRegistries={} packet={}",
+        clientPhase.forgeHandshakeFromOutPreBridge = outPreBridge;
+        Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] initial-forge-modlist player={} server={} serverMods={} serverRegistries={} packet={} outPreBridge={}",
                 player.getUsername(), server.getServerInfo().getName(), modListPacket.getMods().size(),
-                modListPacket.getRegistries().size(), message.getClass().getSimpleName());
+                modListPacket.getRegistries().size(), message.getClass().getSimpleName(), outPreBridge);
       }
       if (message instanceof RegistryPacket registryPacket) {
         clientPhase.forgeHandshake.addRegistry(registryPacket);
@@ -101,28 +128,45 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
     } else {
       //Reset client if not ready to receive new handshake
       VelocityForgeClientConnectionPhase.ClientResetType resetType = clientPhase.getResetType();
-      if (resetType == VelocityForgeClientConnectionPhase.ClientResetType.CRP) {
-        Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] reset-before-new-handshake player={} target={} resetType={} packet={} clientState={} connectedServer={} inFlight={}",
+      if (resetType == VelocityForgeClientConnectionPhase.ClientResetType.CRP
+              || resetType == VelocityForgeClientConnectionPhase.ClientResetType.SR) {
+        boolean reconnectFreshAfterOutPre = resetType == VelocityForgeClientConnectionPhase.ClientResetType.CRP
+                && clientPhase.forgeHandshakeFromOutPreBridge
+                && !outPreBridge;
+        Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] reset-before-new-handshake player={} target={} resetType={} packet={} clientState={} connectedServer={} inFlight={} freshReconnectAfterOutPre={}",
                 player.getUsername(), server.getServerInfo().getName(), resetType, message.getClass().getSimpleName(),
                 player.getConnection().getState(),
                 player.getConnectedServer() == null ? "<none>" : player.getConnectedServer().getServerInfo().getName(),
-                player.getConnectionInFlight() == null ? "<none>" : player.getConnectionInFlight().getClass().getName());
-        clientPhase.resetConnectionPhaseAndForwardAfterAck(player, server, message);
-        return;
-      }
-      if (resetType == VelocityForgeClientConnectionPhase.ClientResetType.SR) {
-        ChannelFuture resetFuture = clientPhase.resetConnectionPhaseFuture(player);
-        resetFuture.addListener(future -> {
-          if (!future.isSuccess()) {
-            Ambassador.getInstance().logger.warn("Failed to reset client before forwarding forge login packet player={} server={}",
-                    player.getUsername(), server.getServerInfo().getName(), future.cause());
-            server.disconnect();
-            return;
+                player.getConnectionInFlight() == null ? "<none>" : player.getConnectionInFlight().getClass().getName(),
+                reconnectFreshAfterOutPre);
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend triggering client reset player={} resetType={} server={} firstMsg={} freshReconnectAfterOutPre={}",
+                player.getUsername(), resetType, server.getServerInfo().getName(), message.getClass().getSimpleName(), reconnectFreshAfterOutPre);
+        if (reconnectFreshAfterOutPre) {
+          clientPhase.reconnectFreshAfterReset(server.getServer());
+          clientPhase.resetConnectionPhase(player);
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend reset will silent-close stale probe and reconnect fresh after CRP player={} target={} clientState={} active={} inFlight={}",
+                  player.getUsername(), server.getServerInfo().getName(), player.getConnection().getState(), player.isActive(),
+                  player.getConnectionInFlight() == null ? "null" : player.getConnectionInFlight().getServerInfo().getName());
+          if (server.getConnection().getActiveSessionHandler() instanceof ForgeLoginSessionHandler forgeLoginSessionHandler) {
+            forgeLoginSessionHandler.suppressDisconnectHandling();
+            Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend marked stale probe disconnect suppressed player={} target={}",
+                    player.getUsername(), server.getServerInfo().getName());
+          } else if (Ambassador.getInstance().isTraceEnabled()) {
+            Object activeHandler = server.getConnection().getActiveSessionHandler();
+            Ambassador.getInstance().traceWarn("[HZL-OUTPRE][TRACE] backend stale probe active handler was not ForgeLoginSessionHandler player={} target={} handler={}",
+                    player.getUsername(), server.getServerInfo().getName(), activeHandler == null ? "null" : activeHandler.getClass().getName());
           }
-          if (player.isActive()) {
-            forwardForgeLoginPacketToClient(player, message);
-          }
-        });
+          player.resetInFlightConnection();
+          server.disconnect();
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend silent-closed stale probe after scheduling fresh reconnect player={} target={} clientState={} active={} inFlight={}",
+                  player.getUsername(), server.getServerInfo().getName(), player.getConnection().getState(), player.isActive(),
+                  player.getConnectionInFlight() == null ? "null" : player.getConnectionInFlight().getServerInfo().getName());
+          return;
+        }
+        clientPhase.resetConnectionPhase(player);
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend forwarding first post-reset msg player={} msg={} clientState={}",
+                player.getUsername(), message.getClass().getSimpleName(), player.getConnection().getState());
+        forwardForgeLoginPacketToClient(player, message);
         return;
       }
 
@@ -142,6 +186,10 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
       }
 
       if (message instanceof ModListPacket modListPacket) {
+        handshake = new ForgeHandshake();
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend ModListPacket server={} registries={} replacingOutPreBaseline={} compatibleBefore={}",
+                server.getServerInfo().getName(), modListPacket.getRegistries().size(), replacingOutPreBaseline,
+                clientPhase.forgeHandshake.isCompatible(handshake));
         remainingRegistries = new CountDownLatch(modListPacket.getRegistries().size());
 
         Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] target-forge-modlist player={} target={} serverMods={} serverRegistries={} clientMods={} clientReplyRegistries={} clientStoredRegistries={} bypassMods={} bypassRegistries={} ignoredServerMods={}",
@@ -165,20 +213,20 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
           }
         }).thenAcceptAsync((v) -> {
 
-          if(Ambassador.getInstance().config.isDebugMode()) {
-            player.sendMessage(Component.text("Handshake took: " + (System.currentTimeMillis()-time) + " ms"));
+          if (Ambassador.getInstance().config.isDebugMode()) {
+            player.sendMessage(Component.text("Handshake took: " + (System.currentTimeMillis() - time) + " ms"));
             player.sendMessage(Component.text("Avg packet time" +
-                    (System.currentTimeMillis()-time)/modListPacket.getRegistries().size() + " ms"));
+                    (System.currentTimeMillis() - time) / modListPacket.getRegistries().size() + " ms"));
           }
 
           List<String> ignoredServerMods = Ambassador.getInstance().config.getIgnoredServerMods();
           List<String> missingMods = missingRequiredMods(modListPacket, clientPhase.forgeHandshake.getModListReplyPacket(), ignoredServerMods);
           boolean registryCompatible = clientPhase.forgeHandshake.isCompatible(handshake);
           String registryDiff = describeRegistryDiff(clientPhase.forgeHandshake, handshake);
-          Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] target-forge-registry-result player={} target={} elapsedMs={} missingMods={} ignoredServerMods={} registryCompatible={} clientRegistries={} targetRegistries={} registryDiff={}",
+          Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] target-forge-registry-result player={} target={} elapsedMs={} missingMods={} ignoredServerMods={} registryCompatible={} replacingOutPreBaseline={} clientRegistries={} targetRegistries={} registryDiff={}",
                   player.getUsername(), server.getServer().getServerInfo().getName(), System.currentTimeMillis() - time,
-                  missingMods.size(), ignoredServerMods, registryCompatible, clientPhase.forgeHandshake.getRegistries().size(),
-                  handshake.getRegistries().size(), registryDiff);
+                  missingMods.size(), ignoredServerMods, registryCompatible, replacingOutPreBaseline,
+                  clientPhase.forgeHandshake.getRegistries().size(), handshake.getRegistries().size(), registryDiff);
           if (!missingMods.isEmpty() && !Ambassador.getInstance().config.isBypassModCheck()) {
             String shownMissingMods = describeMissingMods(missingMods);
             player.sendMessage(Component.text("缺少服务端要求的 Forge mods: " + shownMissingMods));
@@ -191,7 +239,13 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
                     player.getUsername(), server.getServer().getServerInfo().getName(), describeMissingMods(missingMods));
           }
 
-          if (Ambassador.getInstance().config.isBypassRegistryCheck() || registryCompatible) {
+          if (replacingOutPreBaseline && !registryCompatible) {
+            Ambassador.getInstance().logger.error("Unable to switch from OutPre auth server {} to {} without client reset because registries differ for player {}: {}",
+                    player.getConnectedServer() == null ? "<none>" : player.getConnectedServer().getServer().getServerInfo().getName(),
+                    server.getServer().getServerInfo().getName(), player.getUsername(), registryDiff);
+            server.disconnect();
+          } else if (Ambassador.getInstance().config.isBypassRegistryCheck() || registryCompatible) {
+            clientPhase.forgeHandshakeFromOutPreBridge = false;
             Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] forwarding-client-modlist-to-backend player={} target={} clientMods={} clientChannels={}",
                     player.getUsername(), server.getServer().getServerInfo().getName(),
                     clientPhase.forgeHandshake.getModListReplyPacket().getMods().size(),
@@ -211,15 +265,17 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
         server.getConnection().write(new ACKPacket(Context.fromContext(message.getContext(), true)));
         handshake.addRegistry(registryPacket);
         remainingRegistries.countDown();
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] backend RegistryPacket server={} registry={} remaining={}",
+                server.getServerInfo().getName(), registryPacket.getRegistryName(), remainingRegistries.getCount());
       } else if (message instanceof ConfigDataPacket) {
         server.getConnection().write(new ACKPacket(Context.fromContext(message.getContext(), true)));
       } else if (message instanceof GenericForgeLoginWrapperPacket<Context> packet
               && ForgeHandshakeUtils.ThirdPartyRegistryUtils.isThirdPartyPacket(packet)) {
-          server.getConnection().write(
-                  ForgeHandshakeUtils.ThirdPartyRegistryUtils.getThirdPartyChannel(packet).
-                          generateResponsePacket(
-                                  Context.ClientContext.fromContext(packet.getContext(), true),
-                                  clientPhase.forgeHandshake));
+        server.getConnection().write(
+                ForgeHandshakeUtils.ThirdPartyRegistryUtils.getThirdPartyChannel(packet).
+                        generateResponsePacket(
+                                Context.ClientContext.fromContext(packet.getContext(), true),
+                                clientPhase.forgeHandshake));
       }
     }
     //Forge server
@@ -233,7 +289,7 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
     if (writeFuture != null) {
       writeFuture.addListener(future -> {
         if (!future.isSuccess()) {
-          Ambassador.getInstance().logger.warn("Failed forwarding backend forge packet {} to client player={} clientState={}",
+          Ambassador.getInstance().logger.warn("[HZL-OUTPRE] failed forwarding backend forge packet {} to client player={} clientState={}",
                   message.getClass().getSimpleName(), player.getUsername(), player.getConnection().getState(), future.cause());
         }
       });
@@ -310,6 +366,17 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   public void onLoginSuccess(VelocityServerConnection serverCon, ConnectedPlayer player) {
   }
 
+  private static boolean isOutPreBridge(VelocityServerConnection server) {
+    if (server == null || server.getConnection() == null || server.getConnection().getActiveSessionHandler() == null) {
+      return false;
+    }
+    Object handler = server.getConnection().getActiveSessionHandler();
+    if (handler instanceof ForgeLoginSessionHandler forgeLoginSessionHandler) {
+      handler = forgeLoginSessionHandler.getOriginal();
+    }
+    return handler.getClass().getName().startsWith("icu.h2l.login.vServer.outpre.");
+  }
+
   void onTransitionToNewPhase(VelocityServerConnection connection) {
   }
 
@@ -318,7 +385,7 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   }
 
   private VelocityForgeBackendConnectionPhase getNewPhase(VelocityServerConnection serverConnection,
-                                                       IForgeLoginWrapperPacket<Context> packet) {
+                                                          IForgeLoginWrapperPacket<Context> packet) {
     VelocityForgeBackendConnectionPhase phaseToTransitionTo = nextPhase();
     if (phaseToTransitionTo != this) {
       phaseToTransitionTo.onTransitionToNewPhase(serverConnection);
@@ -330,7 +397,7 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   public boolean handle(VelocityServerConnection server, ConnectedPlayer player, PluginMessagePacket message) {
     if (message.getChannel().equals("ambassador:commands")) {
       AvailableCommandsPacket packet = new AvailableCommandsPacket();
-      packet.decode(message.content(), ProtocolUtils.Direction.CLIENTBOUND,server.getConnection().getProtocolVersion());
+      packet.decode(message.content(), ProtocolUtils.Direction.CLIENTBOUND, server.getConnection().getProtocolVersion());
       server.getConnection().getActiveSessionHandler().handle(packet);
       return true;
     }
@@ -340,7 +407,4 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   public boolean consideredComplete() {
     return false;
   }
-
-
-
 }

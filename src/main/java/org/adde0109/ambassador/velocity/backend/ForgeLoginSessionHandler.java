@@ -17,6 +17,7 @@ public class ForgeLoginSessionHandler implements MinecraftSessionHandler {
   private final MinecraftSessionHandler original;
   private final VelocityServerConnection serverConnection;
   private final VelocityServer server;
+  private boolean suppressDisconnectHandling = false;
 
   public ForgeLoginSessionHandler(MinecraftSessionHandler original, VelocityServerConnection serverConnection, VelocityServer server) {
     this.original = original;
@@ -30,9 +31,11 @@ public class ForgeLoginSessionHandler implements MinecraftSessionHandler {
     Ambassador.getInstance().debugInfo("[AMB-HZL-DEBUG] backend-login-success packet player={} backend={} packetUser={} packetUuid={} backendPhase={} clientPhase={} clientState={}",
             player.getUsername(), serverConnection.getServerInfo().getName(), packet.getUsername(), packet.getUuid(),
             serverConnection.getPhase(), player.getPhase(), player.getConnection().getState());
+    Ambassador.getInstance().trace("[HZL-OUTPRE] backend login success server={} player={} phase={} original={}",
+            serverConnection.getServerInfo().getName(), player.getUsername(), serverConnection.getPhase(), original.getClass().getName());
 
     if ((serverConnection.getPhase() instanceof VelocityForgeBackendConnectionPhase phase)) {
-      phase.onLoginSuccess(serverConnection,serverConnection.getPlayer());
+      phase.onLoginSuccess(serverConnection, serverConnection.getPlayer());
     }
 
     Channel backendChannel = serverConnection.getConnection() == null
@@ -80,10 +83,13 @@ public class ForgeLoginSessionHandler implements MinecraftSessionHandler {
     return true;
   }
 
-
-
   @Override
   public boolean handle(DisconnectPacket packet) {
+    if (suppressDisconnectHandling) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] suppressed stale backend disconnect packet server={} player={}",
+              serverConnection.getServerInfo().getName(), serverConnection.getPlayer().getUsername());
+      return true;
+    }
     Ambassador.getInstance().debugWarn("[AMB-HZL-DEBUG] backend-disconnect-packet player={} backend={} packet={}",
             serverConnection.getPlayer().getUsername(), serverConnection.getServerInfo().getName(), packet);
     return original.handle(packet);
@@ -91,12 +97,31 @@ public class ForgeLoginSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void disconnected() {
-      original.disconnected();
+    if (suppressDisconnectHandling) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] suppressed stale backend disconnected server={} player={}",
+              serverConnection.getServerInfo().getName(), serverConnection.getPlayer().getUsername());
+      return;
+    }
+    original.disconnected();
+  }
+
+  @Override
+  public void exception(Throwable throwable) {
+    if (suppressDisconnectHandling) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] suppressed stale backend exception server={} player={} cause={}",
+              serverConnection.getServerInfo().getName(), serverConnection.getPlayer().getUsername(), throwable == null ? "null" : throwable.toString());
+      return;
+    }
+    original.exception(throwable);
   }
 
   public void handleGeneric(MinecraftPacket packet) {
     if (!packet.handle(original))
       original.handleGeneric(packet);
+  }
+
+  public void suppressDisconnectHandling() {
+    this.suppressDisconnectHandling = true;
   }
 
   public MinecraftSessionHandler getOriginal() {

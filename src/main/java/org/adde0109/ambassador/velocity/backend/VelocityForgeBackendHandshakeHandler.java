@@ -8,6 +8,7 @@ import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.network.Connections;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import io.netty.channel.*;
+import org.adde0109.ambassador.Ambassador;
 import org.adde0109.ambassador.forge.ForgeConstants;
 import org.adde0109.ambassador.forge.ForgeFMLConnectionType;
 import org.adde0109.ambassador.forge.pipeline.ForgeLoginWrapperCodec;
@@ -38,6 +39,7 @@ public class VelocityForgeBackendHandshakeHandler extends ChannelInboundHandlerA
           return;
         }
 
+        Ambassador.getInstance().trace("[HZL-OUTPRE] backend forge wrapper installing server={} player={} activeHandler={} channel={}", serverConnection.getServerInfo().getName(), player.getUsername(), sessionHandler.getClass().getName(), connection.getChannel());
         ForgeLoginSessionHandler forgeLoginSessionHandler = new ForgeLoginSessionHandler(sessionHandler, serverConnection, server);
         connection.setActiveSessionHandler(StateRegistry.LOGIN, forgeLoginSessionHandler);
 

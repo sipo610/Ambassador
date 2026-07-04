@@ -5,7 +5,13 @@ plugins {
 }
 
 group = "org.adde0109"
-version = "1.5.3-beta"
+version = "1.5.3-beta-hzl-outpre"
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(17))
+    }
+}
 
 repositories {
     mavenCentral()

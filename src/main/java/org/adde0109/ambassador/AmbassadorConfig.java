@@ -36,10 +36,17 @@ public class AmbassadorConfig {
     private boolean enableKickReset = false;
 
     @Expose
+    private int crpFreshReconnectDelayMs = 750;
+
+    @Expose
+    private int crpResetSettleDelayMs = 300;
+
+    @Expose
     private String kickReconnectMessageString = "<red>Please reconnect.</red>";
 
     private AmbassadorConfig(boolean silenceWarnings, boolean bypassRegistryCheck, boolean bypassModCheck,
                              List<String> ignoredServerMods, boolean debugMode, boolean enableKickReset,
+                             int crpFreshReconnectDelayMs, int crpResetSettleDelayMs,
                              String kickReconnectMessageString) {
         this.silenceWarnings = silenceWarnings;
         this.bypassRegistryCheck = bypassRegistryCheck;
@@ -47,6 +54,8 @@ public class AmbassadorConfig {
         this.ignoredServerMods = ignoredServerMods;
         this.debugMode = debugMode;
         this.enableKickReset = enableKickReset;
+        this.crpFreshReconnectDelayMs = crpFreshReconnectDelayMs;
+        this.crpResetSettleDelayMs = crpResetSettleDelayMs;
         this.kickReconnectMessageString = kickReconnectMessageString;
     }
 
@@ -91,6 +100,9 @@ public class AmbassadorConfig {
         String kickReconnectMessageString = config.getOrElse("disconnect-reset-message",
                 config.getOrElse("reconnect-message", "<red>Please reconnect.</red>"));
 
+        int crpFreshReconnectDelayMs = Math.max(0, config.getOrElse("crp-fresh-reconnect-delay-ms", 750));
+        int crpResetSettleDelayMs = Math.max(0, config.getOrElse("crp-reset-settle-delay-ms", 300));
+
         //Upgrade config
         if (configVersion <= 2.0) {
             Files.delete(path);
@@ -107,13 +119,16 @@ public class AmbassadorConfig {
             config.set("bypass-mod-checks", bypassModCheck);
             config.set("ignored-server-mods", ignoredServerMods);
             config.set("debug-mode", debugMode);
+            config.set("crp-fresh-reconnect-delay-ms", crpFreshReconnectDelayMs);
+            config.set("crp-reset-settle-delay-ms", crpResetSettleDelayMs);
             config.set("reconnect-message", kickReconnectMessageString);
         }
 
         boolean enableKickReset = config.getOrElse("enable-kick-reset", false);
 
         return new AmbassadorConfig(silenceWarnings, bypassRegistryCheck, bypassModCheck, ignoredServerMods,
-                debugMode, enableKickReset, kickReconnectMessageString);
+                debugMode, enableKickReset, crpFreshReconnectDelayMs, crpResetSettleDelayMs,
+                kickReconnectMessageString);
     }
 
     private static List<String> readStringList(Object value, List<String> defaultValue) {
@@ -161,6 +176,14 @@ public class AmbassadorConfig {
 
     public boolean isEnableKickReset() {
         return enableKickReset;
+    }
+
+    public int getCrpFreshReconnectDelayMs() {
+        return crpFreshReconnectDelayMs;
+    }
+
+    public int getCrpResetSettleDelayMs() {
+        return crpResetSettleDelayMs;
     }
 
     public String getKickReconnectMessageString() {

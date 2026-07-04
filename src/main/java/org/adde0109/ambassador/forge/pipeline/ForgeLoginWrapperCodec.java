@@ -1,5 +1,6 @@
 package org.adde0109.ambassador.forge.pipeline;
 
+import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.protocol.ProtocolUtils;
 import com.velocitypowered.proxy.protocol.packet.LoginPluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.LoginPluginResponsePacket;
@@ -38,24 +39,40 @@ public class ForgeLoginWrapperCodec extends MessageToMessageCodec<DeferredByteBu
   protected void decode(ChannelHandlerContext ctx, DeferredByteBufHolder in, List<Object> out) throws Exception {
 
     ByteBuf buf = in.content();
+    boolean traceEnabled = Ambassador.getInstance().isTraceEnabled();
+    if (traceEnabled) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec decode inbound={} readable={} {}",
+              in.getClass().getSimpleName(), buf.readableBytes(), describe(ctx));
+    }
 
     Context context;
     if (in instanceof LoginPluginResponsePacket msg) {
       //Continue from stored context
-      context = Context.fromContext(
-              loginWrapperContexts.remove(((LoginPluginResponsePacket) msg).getId()), msg.isSuccess());
+      Context storedContext = loginWrapperContexts.remove(((LoginPluginResponsePacket) msg).getId());
+      if (traceEnabled) {
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec client response id={} success={} storedContext={} {}",
+                msg.getId(), msg.isSuccess(), storedContext == null ? "null" : storedContext.getChannelName(), describe(ctx));
+      }
+      context = Context.fromContext(storedContext, msg.isSuccess());
       if (!msg.isSuccess()) {
         //Nothing to read, just create an empty packet.
         out.add(GenericForgeLoginWrapperPacket.read(buf, context));
         return;
       } else {
         String channel = ProtocolUtils.readString(buf); //Read the channel even though we know the channel by context.
-        Ambassador.getInstance();
+        if (traceEnabled) {
+          Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec client response payload channel={} contextChannel={} remaining={} {}",
+                  channel, context.getChannelName(), buf.readableBytes(), describe(ctx));
+        }
       }
     } else {
       //New context.
       LoginPluginMessagePacket msg = (LoginPluginMessagePacket) in;
       String channel = ProtocolUtils.readString(buf);
+      if (traceEnabled) {
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec server message id={} channel={} remaining={} {}",
+                msg.getId(), channel, buf.readableBytes(), describe(ctx));
+      }
 
       context = Context.createContext(msg.getId(), channel);
     }
@@ -68,6 +85,10 @@ public class ForgeLoginWrapperCodec extends MessageToMessageCodec<DeferredByteBu
     } else {
       int length = ProtocolUtils.readVarInt(buf);
       int packetID = ProtocolUtils.readVarInt(buf);
+      if (traceEnabled) {
+        Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec fml-handshake packetID={} length={} context={} remaining={} {}",
+                packetID, length, context.getClass().getSimpleName(), buf.readableBytes(), describe(ctx));
+      }
       if (context instanceof Context.ClientContext clientContext) {
         switch (packetID) {
           case 2:
@@ -125,6 +146,7 @@ public class ForgeLoginWrapperCodec extends MessageToMessageCodec<DeferredByteBu
     String channel = msg.getContext().getChannelName();
 
     wrapped = Unpooled.buffer();
+    boolean traceEnabled = Ambassador.getInstance().isTraceEnabled();
 
     if (data) {
       ByteBuf encoded = msg.encode();
@@ -134,6 +156,10 @@ public class ForgeLoginWrapperCodec extends MessageToMessageCodec<DeferredByteBu
       wrapped.writeBytes(encoded);
       encoded.release();
     }
+    if (traceEnabled) {
+      Ambassador.getInstance().trace("[HZL-OUTPRE][TRACE] codec encode msg={} channel={} responseId={} {}",
+              msg.getClass().getSimpleName(), msg.getContext().getChannelName(), msg.getContext().getResponseID(), describe(ctx));
+    }
     if (msg.getContext() instanceof Context.ClientContext clientContext) {
       out.add(new LoginPluginResponsePacket(clientContext.getResponseID(), clientContext.success(), wrapped));
     } else {
@@ -142,5 +168,17 @@ public class ForgeLoginWrapperCodec extends MessageToMessageCodec<DeferredByteBu
         this.loginWrapperContexts.put(msg.getContext().getResponseID(), msg.getContext());
       }
     }
+  }
+
+  private static String describe(ChannelHandlerContext ctx) {
+    MinecraftConnection connection = ctx.pipeline().get(MinecraftConnection.class);
+    if (connection == null) {
+      return "connection=null channel=" + ctx.channel();
+    }
+    Object association = connection.getAssociation();
+    return "state=" + connection.getState()
+            + " protocol=" + connection.getProtocolVersion()
+            + " assoc=" + (association == null ? "null" : association.getClass().getName())
+            + " channel=" + ctx.channel();
   }
 }

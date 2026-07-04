@@ -1,34 +1,39 @@
-# Do not change this
+# 不要修改此项；用于配置文件版本迁移。
 config-version = "2.1"
 
-# How much time the player has to reconnect before canceling the server switch. (In seconds)
-# Only for players with ServerRedirect mod installed. Set to -1 to disable ServerRedirect mod support.
+# 玩家使用 ServerRedirect 模组跨服时，允许重连并继续本次跨服的等待时间，单位：秒。
+# 仅对安装了 ServerRedirect 的玩家生效；设为 -1 可关闭 ServerRedirect 模组支持。
 serverRedirectTimeout = 30
 
-# Silence PCF absence warnings.
+# 是否静默 PCF 缺失警告。
 silence-warnings = false
 
-# Allow server switches without reset even though the new server's registries don't match the old server’s registry.
-# Large modpacks often needs this set to true. Warning: This is a safety measure and setting this to true
-# can lead to unstable behaviour.
+# 是否允许在新旧服务器注册表不一致时跳过注册表检查并继续跨服。
+# 大型整合包有时需要设为 true；这是安全检查，开启后可能导致不稳定行为。
 bypass-registry-checks = false
 
-# Allow player to switch without reset when the server's mods don't match. Even more unstable than bypassRegistryCheck.
-# Warning: This is a safety measure for when bypassRegistryCheck is true. Setting this to also true can cause crashes.
+# 是否允许在服务器模组列表不一致时跳过模组检查。
+# 这比 bypass-registry-checks 更激进；仅在明确需要时开启，否则可能崩溃。
 bypass-mod-checks = false
 
-# Ignore server-only mod ids when checking the target Forge ModList against the client ModList.
-# Keep bypass-mod-checks disabled; add only ids that are confirmed to be server-only in your pack.
-# HZL/Mohist production packs often expose these even when the client should not install them.
+# 检查目标 Forge ModList 时忽略这些“只应存在于服务端”的 mod id。
+# 不建议打开 bypass-mod-checks；确认某个 mod 只在服务端存在时，再把 id 加到这里。
 ignored-server-mods = ["mohist", "ftbsync", "antiportals"]
 
-# Only for debug/troubleshooting
+# 调试模式。排查问题时设为 true，正常运行建议 false，避免大量日志和额外开销。
 debug-mode = false
 
-# Make the player reconnect when server switching as a last resort if
-# the player can't reset or switch servers without resetting.
+# 客户端确认 Client Reset Packet 后，Ambassador 重新连接真实目标后端前等待多久，单位：毫秒。
+# 值越低，OutPre/登录服 -> Forge 服跨服越快；如果客户端在 negotiating 附近断开，就适当调高。
+crp-fresh-reconnect-delay-ms = 900
+
+# 客户端确认 Client Reset Packet 后，Ambassador 放行排队中的 Forge 登录包前等待多久，单位：毫秒。
+# 值越低，普通 Forge -> Forge 跨服越快；如果客户端出现空连接、重载后立刻断开，就适当调高。
+crp-reset-settle-delay-ms = 450
+
+# 当无法无重置跨服、也无法让客户端完成重置时，是否用踢出重连作为最后兜底。
 enable-kick-reset = false
 
-# Message to display when player gets kicked due to server switching according to enable-kick-reset.
-# This input is deserialzied as MiniMessage and support formating according to the MiniMessage format.
+# enable-kick-reset 生效时显示给玩家的重连提示。
+# 此文本按 MiniMessage 解析。
 reconnect-message = "<red>Please reconnect.</red>"

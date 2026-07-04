@@ -66,9 +66,23 @@ public class Ambassador {
     return instance;
   }
 
+  public boolean isTraceEnabled() {
+    return config != null && config.isDebugMode();
+  }
+
   public void debugInfo(String message, Object... args) {
-    if (config != null && config.isDebugMode()) {
+    trace(message, args);
+  }
+
+  public void trace(String message, Object... args) {
+    if (isTraceEnabled()) {
       logger.info(message, args);
+    }
+  }
+
+  public void traceWarn(String message, Object... args) {
+    if (isTraceEnabled()) {
+      logger.warn(message, args);
     }
   }
 
