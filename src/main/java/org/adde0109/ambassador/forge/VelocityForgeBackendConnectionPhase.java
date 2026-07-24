@@ -9,7 +9,10 @@ import com.velocitypowered.proxy.protocol.ProtocolUtils;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.packet.AvailableCommandsPacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
 import net.kyori.adventure.text.Component;
 import org.adde0109.ambassador.Ambassador;
 import org.adde0109.ambassador.velocity.backend.ForgeLoginSessionHandler;
@@ -19,6 +22,7 @@ import org.adde0109.ambassador.forge.pipeline.CommandDecoderErrorCatcher;
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -284,16 +288,70 @@ public enum VelocityForgeBackendConnectionPhase implements BackendConnectionPhas
   }
 
   static void forwardForgeLoginPacketToClient(ConnectedPlayer player, IForgeLoginWrapperPacket<?> message) {
-    player.getConnection().setState(StateRegistry.LOGIN);
-    ChannelFuture writeFuture = player.getConnection().write(message);
+    MinecraftConnection connection = player.getConnection();
+    if (connection.isClosed() || !connection.getChannel().isActive()) {
+      logForwardFailureOnce(player, message, null);
+      return;
+    }
+    armClientHandshakeWatchdog(player);
+    connection.setState(StateRegistry.LOGIN);
+    ChannelFuture writeFuture = connection.write(message);
     if (writeFuture != null) {
       writeFuture.addListener(future -> {
         if (!future.isSuccess()) {
-          Ambassador.getInstance().logger.warn("[HZL-OUTPRE] failed forwarding backend forge packet {} to client player={} clientState={}",
-                  message.getClass().getSimpleName(), player.getUsername(), player.getConnection().getState(), future.cause());
+          logForwardFailureOnce(player, message, future.cause());
         }
       });
     }
+  }
+
+  private static final AttributeKey<Boolean> FORWARD_FAILURE_LOGGED =
+          AttributeKey.valueOf("ambassador.forge-forward-failure-logged");
+  private static final AttributeKey<Boolean> HANDSHAKE_WATCHDOG_ARMED =
+          AttributeKey.valueOf("ambassador.forge-handshake-watchdog-armed");
+  // Kick slightly before the backend's 30 s vanilla login timeout so the player
+  // gets an actionable message instead of a generic "unable to connect".
+  private static final long HANDSHAKE_WATCHDOG_DELAY_MS = 25_000L;
+
+  private static void logForwardFailureOnce(ConnectedPlayer player, IForgeLoginWrapperPacket<?> message, Throwable cause) {
+    Attribute<Boolean> logged = player.getConnection().getChannel().attr(FORWARD_FAILURE_LOGGED);
+    if (Boolean.TRUE.equals(logged.get())) {
+      return;
+    }
+    logged.set(true);
+    Ambassador.getInstance().logger.warn("[HZL-OUTPRE] failed forwarding backend forge packet {} to client, dropping remainder player={} clientState={}",
+            message.getClass().getSimpleName(), player.getUsername(), player.getConnection().getState(), cause);
+  }
+
+  private static void armClientHandshakeWatchdog(ConnectedPlayer player) {
+    Attribute<Boolean> armed = player.getConnection().getChannel().attr(HANDSHAKE_WATCHDOG_ARMED);
+    if (Boolean.TRUE.equals(armed.get())) {
+      return;
+    }
+    armed.set(true);
+    scheduleClientHandshakeCheck(player);
+  }
+
+  private static void scheduleClientHandshakeCheck(ConnectedPlayer player) {
+    Channel channel = player.getConnection().getChannel();
+    channel.eventLoop().schedule(() -> {
+      if (!channel.isActive()
+              || player.getPhase().consideredComplete()
+              || player.getConnection().getState() != StateRegistry.LOGIN) {
+        channel.attr(HANDSHAKE_WATCHDOG_ARMED).set(false);
+        return;
+      }
+      Attribute<Boolean> progress = channel.attr(VelocityForgeClientConnectionPhase.CLIENT_HANDSHAKE_PROGRESS);
+      if (Boolean.TRUE.equals(progress.get())) {
+        // Client is alive but the handshake is still running; watch the next window.
+        progress.set(false);
+        scheduleClientHandshakeCheck(player);
+        return;
+      }
+      Ambassador.getInstance().logger.warn("[HZL-OUTPRE] forge login handshake stalled without any client reply, kicking for clean reconnect player={}",
+              player.getUsername());
+      player.disconnect(Component.text("Forge handshake timed out, please reconnect. / Forge 握手超时，请重新连接。"));
+    }, HANDSHAKE_WATCHDOG_DELAY_MS, TimeUnit.MILLISECONDS);
   }
 
   private static List<String> missingRequiredMods(ModListPacket serverModList, ModListReplyPacket clientModList,

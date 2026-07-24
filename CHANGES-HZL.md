@@ -77,12 +77,18 @@ src/main/java/org/adde0109/ambassador/forge/VelocityForgeClientConnectionPhase.j
 
 上游在 Forge 握手完成后会直接注册玩家。HZL outpre 下玩家连接可能已经由 HZL 管理，重复注册会破坏流程。
 
-新增判断：
+新增判断（兼容 HZL outpre 新旧两种 bridge 形态）：
+
+- 旧：`connectionInFlight` 类名以 `icu.h2l.login.vServer.outpre.` 开头；
+- 新（26.7.3 包装式 VSC）：看 inFlight 后端 active session handler 包名，或客户端 active handler 包名；
+- 若 handler 被 AMB 包成 `ForgeLoginSessionHandler`，先 `getOriginal()` 再判断。
 
 ```java
 private static boolean isOutPreBridge(ConnectedPlayer player) {
-  return player.getConnectionInFlight() != null
-          && player.getConnectionInFlight().getClass().getName().startsWith("icu.h2l.login.vServer.outpre.");
+  if (isOutPreServerConnection(player.getConnectionInFlight())) {
+    return true;
+  }
+  return isOutPreSessionHandler(player.getConnection().getActiveSessionHandler());
 }
 ```
 
@@ -174,6 +180,37 @@ if (association instanceof VelocityServerConnection serverConnection
         ...
 ) {
 ```
+
+### 8. 客户端握手看门狗 + 转发失败收敛（2026-07-24）
+
+文件：
+
+```text
+src/main/java/org/adde0109/ambassador/forge/VelocityForgeBackendConnectionPhase.java
+src/main/java/org/adde0109/ambassador/forge/VelocityForgeClientConnectionPhase.java
+```
+
+背景：生产日志中出现「玩家认证成功 → 后端 30 秒登录超时踢线」的静默失败：后端下发的
+Forge 登录握手包（RegistryPacket/ConfigDataPacket）经桥接转发给停留在 `LOGIN` 状态的
+客户端后无任何应答（客户端假死/网络单向不通），双方互等直至各自超时；客户端通道最终
+关闭时，积压的 write future 集中失败，产生每次约 90 条重复 WARN。
+
+修改：
+
+1. `forwardForgeLoginPacketToClient`：
+   - 客户端通道已关闭时直接跳过写入；
+   - 写失败告警每个连接只记 **一条**（`ambassador.forge-forward-failure-logged` channel attr 去重）。
+2. 新增握手看门狗：向客户端转发第一个后端 Forge 登录包时布置（每连接一次），每 25 秒
+   检查一次——若握手仍未完成、客户端仍在 `LOGIN` 且窗口内 **没有收到客户端任何 Forge
+   应答**，主动断开玩家并提示「Forge 握手超时，请重新连接」。有应答但未完成则顺延观察
+   下一窗口。25 秒早于后端 30 秒原版登录超时，玩家能看到可操作的提示而非泛化的
+   「无法连接」。
+3. `VelocityForgeClientConnectionPhase` 两个客户端应答入口（常规握手应答与 CRP reset
+   ACK）打 `ambassador.forge-client-handshake-progress` 进度标记，供看门狗区分
+   「慢但活着」与「死连接」。
+
+注意：这不是 outpre reset/re-register 联调的完整方案（真·双连接判定仍待做），但把
+静默 30 秒挂死变成了带明确提示的快速失败，且消除了刷屏。
 
 ## 部署建议
 

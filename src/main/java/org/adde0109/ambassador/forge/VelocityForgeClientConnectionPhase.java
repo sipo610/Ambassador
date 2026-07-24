@@ -25,6 +25,7 @@ import org.adde0109.ambassador.forge.packet.Context;
 import org.adde0109.ambassador.forge.packet.GenericForgeLoginWrapperPacket;
 import org.adde0109.ambassador.forge.packet.IForgeLoginWrapperPacket;
 import org.adde0109.ambassador.forge.packet.ModListReplyPacket;
+import org.adde0109.ambassador.velocity.backend.ForgeLoginSessionHandler;
 import org.adde0109.ambassador.velocity.client.ClientPacketQueue;
 import org.adde0109.ambassador.velocity.client.FML2CRPMResetCompleteDecoder;
 import org.adde0109.ambassador.velocity.client.OutboundSuccessHolder;
@@ -69,6 +70,7 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
 
     @Override
     public boolean handle(ConnectedPlayer player, IForgeLoginWrapperPacket msg, VelocityServerConnection server) {
+      markClientHandshakeProgress(player);
       if (msg.getContext().getResponseID() == 98) {
         RegisteredServer reconnectTarget = resetReconnectTarget;
         resetReconnectTarget = null;
@@ -232,6 +234,15 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
   private static final AttributeKey<PendingForgeLoginPacket> PENDING_RESET_LOGIN_PACKET =
           AttributeKey.valueOf("ambassador.pending-reset-login-packet");
 
+  // Set whenever the client sends any forge login reply; the backend-phase
+  // handshake watchdog clears it per check window to detect a dead client.
+  public static final AttributeKey<Boolean> CLIENT_HANDSHAKE_PROGRESS =
+          AttributeKey.valueOf("ambassador.forge-client-handshake-progress");
+
+  static void markClientHandshakeProgress(ConnectedPlayer player) {
+    player.getConnection().getChannel().attr(CLIENT_HANDSHAKE_PROGRESS).set(true);
+  }
+
   // TODO: Make a new class linked to each player with these fields instead of having them in this phase class.
   public ForgeHandshake forgeHandshake = new ForgeHandshake();
   public boolean forgeHandshakeFromOutPreBridge = false;
@@ -240,6 +251,7 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
 
   public boolean handle(ConnectedPlayer player, IForgeLoginWrapperPacket<Context.ClientContext> msg,
                         VelocityServerConnection server) {
+    markClientHandshakeProgress(player);
     if (msg.getContext().getChannelName().equals("zeta:main")) {
       forgeHandshake.zetaFlagsPacket = (GenericForgeLoginWrapperPacket<Context.ClientContext>) msg;
     }
@@ -391,8 +403,35 @@ public enum VelocityForgeClientConnectionPhase implements ClientConnectionPhase 
   }
 
   private static boolean isOutPreBridge(ConnectedPlayer player) {
-    return player.getConnectionInFlight() != null
-            && player.getConnectionInFlight().getClass().getName().startsWith("icu.h2l.login.vServer.outpre.");
+    if (isOutPreServerConnection(player.getConnectionInFlight())) {
+      return true;
+    }
+    return isOutPreSessionHandler(player.getConnection().getActiveSessionHandler());
+  }
+
+  private static boolean isOutPreServerConnection(VelocityServerConnection serverConnection) {
+    if (serverConnection == null) {
+      return false;
+    }
+    if (isOutPreClassName(serverConnection.getClass().getName())) {
+      return true;
+    }
+    MinecraftConnection backendConnection = serverConnection.getConnection();
+    return backendConnection != null && isOutPreSessionHandler(backendConnection.getActiveSessionHandler());
+  }
+
+  private static boolean isOutPreSessionHandler(Object handler) {
+    if (handler == null) {
+      return false;
+    }
+    if (handler instanceof ForgeLoginSessionHandler forgeLoginSessionHandler) {
+      handler = forgeLoginSessionHandler.getOriginal();
+    }
+    return isOutPreClassName(handler.getClass().getName());
+  }
+
+  private static boolean isOutPreClassName(String className) {
+    return className.startsWith("icu.h2l.login.vServer.outpre.");
   }
 
   private static ChannelFuture sendLoginSuccessAndSwitchToPlay(ConnectedPlayer player) {
